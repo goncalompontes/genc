@@ -5,118 +5,157 @@ use crate::semantic::node::Spanned;
 
 use super::{Env, FnId, ResolutionError, TyDef, TyId};
 
+enum HoistedItem<'ast> {
+    TypeDef(&'ast ast::TypeDef<'ast>, TyId),
+    Alias(&'ast ast::RAlias<'ast>, TyId),
+    Function(&'ast ast::RFunction<'ast>, FnId),
+}
+
 impl<'ast> Env<'ast> {
     // every time we enter a new scope we need to first look for definitions and hoist them.
     fn hoist_defs(&mut self, items: &'ast [ast::Item<'ast>]) {
-        enum ItemWithId<'a, 'b> {
-            TypeDef(&'a ast::TypeDef<'b>, TyId),
-            Alias(&'a ast::RAlias<'b>, TyId),
-            Function(&'a ast::RFunction<'b>, FnId),
-        }
-
         // We walk all the items, assign them an id, and define them in the current scope.
         // If a duplicate is found, we report it as a `DuplicateTypeDefinition` error.
+        let hoisted = self.hoist_names(items);
+
+        // Now that we have defined all the items, we can resolve references.
+        // If a reference cannot be resolved, we report it as an `UndefinedSymbol` error.
+        self.resolve_defs(hoisted);
+    }
+
+    fn hoist_names(&mut self, items: &'ast [ast::Item<'ast>]) -> Vec<HoistedItem<'ast>> {
         items
             .iter()
             .map(|item| match item {
                 ast::Item::TypeDef(type_def) => {
-                    let id = self.defs.alloc_ty();
-                    if let Err(existing) = self
-                        .scopes
-                        .current_scope()
-                        .define_ty(**type_def.name(), Spanned::new(type_def.name().span(), id))
-                    {
-                        self.diagnostics
-                            .push(ResolutionError::DuplicateTypeDefinition {
-                                symbol: **type_def.name(),
-                                original: existing.span(),
-                                duplicate: type_def.name().span(),
-                            });
-                    };
-                    ItemWithId::TypeDef(type_def, id)
+                    let id = self.hoist_type_def(type_def);
+                    HoistedItem::TypeDef(type_def, id)
                 }
                 ast::Item::Alias(alias) => {
-                    let id = self.defs.alloc_ty();
-                    if let Err(existing) = self
-                        .scopes
-                        .current_scope()
-                        .define_ty(*alias.name, Spanned::new(alias.name.span(), id))
-                    {
-                        self.diagnostics
-                            .push(ResolutionError::DuplicateTypeDefinition {
-                                symbol: *alias.name,
-                                original: existing.span(),
-                                duplicate: alias.name.span(),
-                            });
-                    };
-                    ItemWithId::Alias(alias, id)
+                    let id = self.hoist_alias(alias);
+                    HoistedItem::Alias(alias, id)
                 }
                 ast::Item::Function(func) => {
-                    let id = self.defs.alloc_fn();
-                    if let Err(existing) = self
-                        .scopes
-                        .current_scope()
-                        .define_fn(*func.name, Spanned::new(func.name.span(), id))
-                    {
-                        self.diagnostics
-                            .push(ResolutionError::DuplicateFunctionDefinition {
-                                symbol: *func.name,
-                                original: existing.span(),
-                                duplicate: func.name.span(),
-                            });
-                    }
-                    ItemWithId::Function(func, id)
+                    let id = self.hoist_function(func);
+                    HoistedItem::Function(func, id)
                 }
             })
-            .collect::<Vec<_>>()
-            .into_iter()
-            // Now that we have defined all the items, we can resolve references.
-            // If a reference cannot be resolved, we report it as an `UndefinedSymbol` error.
-            .for_each(|item| match item {
-                ItemWithId::TypeDef(type_def, id) => match type_def {
-                    ast::TypeDef::Enum(enum_def) => {
-                        // We need to get only unique variants inside the enum,
-                        // visiting all duplicates for error reporting
-                        let variants = enum_def.unique_variants(|orig, dup| {
-                            self.diagnostics
-                                .push(ResolutionError::DuplicateVariantDefinition {
-                                    symbol: *dup,
-                                    original: orig.span(),
-                                    duplicate: dup.span(),
-                                });
-                        });
-                        // now we simply construct the definition
-                        self.defs.define_ty(
-                            id,
-                            TyDef::Enum {
-                                variants: variants.into_boxed_slice(),
-                            },
-                        );
-                    }
-                    ast::TypeDef::Data(data_def) => {
-                        // note: since we already exclude duplicate fields, name res is only done
-                        //  for the type of the first definition of a field.
-                        //  this should probably be changed so that we *first* do lookup on the types
-                        //  and only then check for duplicated so that we get better diagnostics
-                        let fields = data_def
-                            .unique_fields(|orig, dup| {
-                                self.diagnostics
-                                    .push(ResolutionError::DuplicateFieldDefinition {
-                                        symbol: *dup,
-                                        original: orig.span(),
-                                        duplicate: dup.span(),
-                                    });
-                            })
-                            .into_iter()
-                            // now that we have all the unique fields, we lookup the types
-                            .map(|(name, ty)| self.scopes.current_scope().lookup_type(&name));
+            .collect()
+    }
 
-                        // TODO!
-                        //self.defs.define_ty(id, TyDef::Struct { fields: fields });
-                    }
-                },
-                ItemWithId::Alias(alias, id) => todo!(),
-                ItemWithId::Function(func, id) => todo!(),
-            });
+    fn hoist_type_def(&mut self, type_def: &'ast ast::TypeDef<'ast>) -> TyId {
+        let id = self.defs.alloc_ty();
+        if let Err(existing) = self
+            .scopes
+            .current_scope()
+            .define_ty(**type_def.name(), Spanned::new(type_def.name().span(), id))
+        {
+            self.diagnostics
+                .push(ResolutionError::DuplicateTypeDefinition {
+                    symbol: **type_def.name(),
+                    original: existing.span(),
+                    duplicate: type_def.name().span(),
+                });
+        };
+        id
+    }
+
+    fn hoist_alias(&mut self, alias: &'ast ast::RAlias<'ast>) -> TyId {
+        let id = self.defs.alloc_ty();
+        if let Err(existing) = self
+            .scopes
+            .current_scope()
+            .define_ty(*alias.name, Spanned::new(alias.name.span(), id))
+        {
+            self.diagnostics
+                .push(ResolutionError::DuplicateTypeDefinition {
+                    symbol: *alias.name,
+                    original: existing.span(),
+                    duplicate: alias.name.span(),
+                });
+        };
+        id
+    }
+
+    fn hoist_function(&mut self, func: &'ast ast::RFunction<'ast>) -> FnId {
+        let id = self.defs.alloc_fn();
+        if let Err(existing) = self
+            .scopes
+            .current_scope()
+            .define_fn(*func.name, Spanned::new(func.name.span(), id))
+        {
+            self.diagnostics
+                .push(ResolutionError::DuplicateFunctionDefinition {
+                    symbol: *func.name,
+                    original: existing.span(),
+                    duplicate: func.name.span(),
+                });
+        }
+        id
+    }
+
+    fn resolve_defs(&mut self, items: Vec<HoistedItem<'ast>>) {
+        items.into_iter().for_each(|item| match item {
+            HoistedItem::TypeDef(type_def, id) => self.resolve_type_def(type_def, id),
+            HoistedItem::Alias(alias, id) => self.resolve_alias(alias, id),
+            HoistedItem::Function(func, id) => self.resolve_function(func, id),
+        });
+    }
+
+    fn resolve_type_def(&mut self, type_def: &'ast ast::TypeDef<'ast>, id: TyId) {
+        match type_def {
+            ast::TypeDef::Enum(enum_def) => self.resolve_enum(enum_def, id),
+            ast::TypeDef::Data(data_def) => self.resolve_data(data_def, id),
+        }
+    }
+
+    fn resolve_enum(&mut self, enum_def: &'ast ast::REnumDef<'ast>, id: TyId) {
+        // We need to get only unique variants inside the enum,
+        // visiting all duplicates for error reporting
+        let variants = enum_def.unique_variants(|orig, dup| {
+            self.diagnostics
+                .push(ResolutionError::DuplicateVariantDefinition {
+                    symbol: *dup,
+                    original: orig.span(),
+                    duplicate: dup.span(),
+                });
+        });
+        // now we simply construct the definition
+        self.defs.define_ty(
+            id,
+            TyDef::Enum {
+                variants: variants.into_boxed_slice(),
+            },
+        );
+    }
+
+    fn resolve_data(&mut self, data_def: &'ast ast::RDataDef<'ast>, id: TyId) {
+        // note: since we already exclude duplicate fields, name res is only done
+        //  for the type of the first definition of a field.
+        //  this should probably be changed so that we *first* do lookup on the types
+        //  and only then check for duplicated so that we get better diagnostics
+        let fields = data_def
+            .unique_fields(|orig, dup| {
+                self.diagnostics
+                    .push(ResolutionError::DuplicateFieldDefinition {
+                        symbol: *dup,
+                        original: orig.span(),
+                        duplicate: dup.span(),
+                    });
+            })
+            .into_iter()
+            // now that we have all the unique fields, we lookup the types
+            .map(|(name, ty)| self.scopes.current_scope().lookup_type(&name));
+
+        // TODO!
+        //self.defs.define_ty(id, TyDef::Struct { fields: fields });
+    }
+
+    fn resolve_alias(&mut self, alias: &'ast ast::RAlias<'ast>, id: TyId) {
+        todo!()
+    }
+
+    fn resolve_function(&mut self, func: &'ast ast::RFunction<'ast>, id: FnId) {
+        todo!()
     }
 }
