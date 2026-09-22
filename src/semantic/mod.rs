@@ -5,7 +5,8 @@
 // the environment is a map from a name to a type. for user defined types, that type has yet another layer of indirection in the form of
 // a type id. a type id is a key to another data structure that we have called the TypeRegistry, which is where the definitions of type exist
 
-pub mod error;
-pub mod kvec;
+pub mod ast;
+pub mod diagnostics;
 pub mod nameres;
+pub mod node;
 pub mod parser;
