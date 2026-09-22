@@ -3,7 +3,6 @@ use std::collections::hash_map::Entry;
 use rustc_hash::{FxHashMap, FxHashSet, FxHasher};
 
 use crate::semantic::ast::Symbol;
-use crate::semantic::node::Spanned;
 
 use super::{FnId, TyId, VarId};
 
@@ -18,9 +17,9 @@ pub enum ScopeKind {
 // (test and benchmark later on)
 #[derive(Default)]
 pub struct SymTable {
-    vars: FxHashMap<Symbol, Spanned<VarId>>,
-    fns: FxHashMap<Symbol, Spanned<FnId>>,
-    tys: FxHashMap<Symbol, Spanned<TyId>>,
+    vars: FxHashMap<Symbol, VarId>,
+    fns: FxHashMap<Symbol, FnId>,
+    tys: FxHashMap<Symbol, TyId>,
 }
 
 impl SymTable {
@@ -33,22 +32,22 @@ impl SymTable {
     }
 
     pub fn with(
-        vars: FxHashMap<Symbol, Spanned<VarId>>,
-        fns: FxHashMap<Symbol, Spanned<FnId>>,
-        tys: FxHashMap<Symbol, Spanned<TyId>>,
+        vars: FxHashMap<Symbol, VarId>,
+        fns: FxHashMap<Symbol, FnId>,
+        tys: FxHashMap<Symbol, TyId>,
     ) -> Self {
         Self { vars, fns, tys }
     }
 
-    pub fn lookup_var(&self, name: &Symbol) -> Option<Spanned<VarId>> {
+    pub fn lookup_var(&self, name: &Symbol) -> Option<VarId> {
         self.vars.get(name).copied()
     }
 
-    pub fn lookup_type(&self, name: &Symbol) -> Option<Spanned<TyId>> {
+    pub fn lookup_type(&self, name: &Symbol) -> Option<TyId> {
         self.tys.get(name).copied()
     }
 
-    pub fn lookup_fn(&self, name: &Symbol) -> Option<Spanned<FnId>> {
+    pub fn lookup_fn(&self, name: &Symbol) -> Option<FnId> {
         self.fns.get(name).copied()
     }
 
@@ -56,7 +55,7 @@ impl SymTable {
     ///
     /// - `None` — the name was free; `id` is now bound.
     /// - `Some(previous)` — the old binding was replaced and is returned.
-    pub fn define_var(&mut self, name: Symbol, id: Spanned<VarId>) -> Option<Spanned<VarId>> {
+    pub fn define_var(&mut self, name: Symbol, id: VarId) -> Option<VarId> {
         self.vars.insert(name, id)
     }
 
@@ -66,7 +65,7 @@ impl SymTable {
     /// - `Err(existing)` — the name was already bound; the map is unchanged
     ///   and `id` was *not* inserted.
     #[must_use = "the shadowed definition is returned; ignoring it hides accidental shadowing"]
-    pub fn define_fn(&mut self, name: Symbol, id: Spanned<FnId>) -> Result<(), Spanned<FnId>> {
+    pub fn define_fn(&mut self, name: Symbol, id: FnId) -> Result<(), FnId> {
         match self.fns.entry(name) {
             Entry::Occupied(e) => Err(*e.get()),
             Entry::Vacant(e) => {
@@ -80,7 +79,7 @@ impl SymTable {
     ///
     /// Same contract as [`Self::define_fn`].
     #[must_use = "the shadowed definition is returned; ignoring it hides accidental shadowing"]
-    pub fn define_ty(&mut self, name: Symbol, id: Spanned<TyId>) -> Result<(), Spanned<TyId>> {
+    pub fn define_ty(&mut self, name: Symbol, id: TyId) -> Result<(), TyId> {
         match self.tys.entry(name) {
             Entry::Occupied(e) => Err(*e.get()),
             Entry::Vacant(e) => {
@@ -105,15 +104,15 @@ impl Scope {
     }
 
     pub fn lookup_var(&self, name: &Symbol) -> Option<VarId> {
-        self.table.lookup_var(name).map(|id| id.value)
+        self.table.lookup_var(name)
     }
 
     pub fn lookup_type(&self, name: &Symbol) -> Option<TyId> {
-        self.table.lookup_type(name).map(|id| id.value)
+        self.table.lookup_type(name)
     }
 
     pub fn lookup_fn(&self, name: &Symbol) -> Option<FnId> {
-        self.table.lookup_fn(name).map(|id| id.value)
+        self.table.lookup_fn(name)
     }
 }
 
@@ -139,7 +138,7 @@ impl Scopes {
         let mut curr = self.scopes.iter().rev();
         loop {
             match curr.next() {
-                None => break self.root.lookup_var(name).map(|id| id.value),
+                None => break self.root.lookup_var(name),
                 Some(scope) => match scope.lookup_var(name) {
                     // name found in this scope, return its id
                     Some(id) => break Some(id),
@@ -160,7 +159,7 @@ impl Scopes {
         let mut curr = self.scopes.iter().rev();
         loop {
             match curr.next() {
-                None => break self.root.lookup_type(name).map(|id| id.value),
+                None => break self.root.lookup_type(name),
                 Some(scope) => match scope.lookup_type(name) {
                     // type found in this scope, return its id
                     Some(id) => break Some(id),
@@ -175,7 +174,7 @@ impl Scopes {
         let mut curr = self.scopes.iter().rev();
         loop {
             match curr.next() {
-                None => break self.root.lookup_fn(name).map(|id| id.value),
+                None => break self.root.lookup_fn(name),
                 Some(scope) => match scope.lookup_fn(name) {
                     // function found in this scope, return its id
                     Some(id) => break Some(id),

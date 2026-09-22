@@ -1,7 +1,6 @@
 use itertools::Itertools;
 
 use crate::semantic::ast;
-use crate::semantic::node::Spanned;
 
 use super::{Env, FnId, ResolutionError, TyDef, TyId};
 
@@ -44,16 +43,17 @@ impl<'ast> Env<'ast> {
     }
 
     fn hoist_type_def(&mut self, type_def: &'ast ast::TypeDef<'ast>) -> TyId {
-        let id = self.defs.alloc_ty();
+        let id = self.defs.alloc_ty(type_def.name().span());
         if let Err(existing) = self
             .scopes
             .current_scope()
-            .define_ty(**type_def.name(), Spanned::new(type_def.name().span(), id))
+            .define_ty(**type_def.name(), id)
         {
+            let original = self.defs.ty_span(existing);
             self.diagnostics
                 .push(ResolutionError::DuplicateTypeDefinition {
                     symbol: **type_def.name(),
-                    original: existing.span(),
+                    original,
                     duplicate: type_def.name().span(),
                 });
         };
@@ -61,16 +61,13 @@ impl<'ast> Env<'ast> {
     }
 
     fn hoist_alias(&mut self, alias: &'ast ast::RAlias<'ast>) -> TyId {
-        let id = self.defs.alloc_ty();
-        if let Err(existing) = self
-            .scopes
-            .current_scope()
-            .define_ty(*alias.name, Spanned::new(alias.name.span(), id))
-        {
+        let id = self.defs.alloc_ty(alias.name.span());
+        if let Err(existing) = self.scopes.current_scope().define_ty(*alias.name, id) {
+            let original = self.defs.ty_span(existing);
             self.diagnostics
                 .push(ResolutionError::DuplicateTypeDefinition {
                     symbol: *alias.name,
-                    original: existing.span(),
+                    original,
                     duplicate: alias.name.span(),
                 });
         };
@@ -78,16 +75,13 @@ impl<'ast> Env<'ast> {
     }
 
     fn hoist_function(&mut self, func: &'ast ast::RFunction<'ast>) -> FnId {
-        let id = self.defs.alloc_fn();
-        if let Err(existing) = self
-            .scopes
-            .current_scope()
-            .define_fn(*func.name, Spanned::new(func.name.span(), id))
-        {
+        let id = self.defs.alloc_fn(func.name.span());
+        if let Err(existing) = self.scopes.current_scope().define_fn(*func.name, id) {
+            let original = self.defs.fn_span(existing);
             self.diagnostics
                 .push(ResolutionError::DuplicateFunctionDefinition {
                     symbol: *func.name,
-                    original: existing.span(),
+                    original,
                     duplicate: func.name.span(),
                 });
         }

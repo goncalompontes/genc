@@ -1,6 +1,7 @@
 use index_vec::{IndexVec, define_index_type};
 
 use crate::semantic::ast::Symbol;
+use crate::semantic::node::Span;
 
 define_index_type! {
     pub struct TyId = usize;
@@ -24,19 +25,25 @@ pub type FnDef = ();
 #[derive(Default)]
 pub struct Definitions {
     tys: IndexVec<TyId, Option<TyDef>>,
+    ty_spans: IndexVec<TyId, Span>,
     vars: IndexVec<VarId, Option<VarDef>>,
+    var_spans: IndexVec<VarId, Span>,
     fns: IndexVec<FnId, Option<FnDef>>,
+    fn_spans: IndexVec<FnId, Span>,
 }
 
 impl Definitions {
     // --- allocate an id now, define it later ------------------------------
-    pub fn alloc_ty(&mut self) -> TyId {
+    pub fn alloc_ty(&mut self, span: Span) -> TyId {
+        self.ty_spans.push(span);
         self.tys.push(None)
     }
-    pub fn alloc_var(&mut self) -> VarId {
+    pub fn alloc_var(&mut self, span: Span) -> VarId {
+        self.var_spans.push(span);
         self.vars.push(None)
     }
-    pub fn alloc_fn(&mut self) -> FnId {
+    pub fn alloc_fn(&mut self, span: Span) -> FnId {
+        self.fn_spans.push(span);
         self.fns.push(None)
     }
 
@@ -52,6 +59,17 @@ impl Definitions {
     pub fn define_fn(&mut self, id: FnId, def: FnDef) {
         let old = self.fns[id].replace(def);
         debug_assert!(old.is_none(), "fn {id:?} was defined twice");
+    }
+
+    // --- definition locations ---------------------------------------------
+    pub fn ty_span(&self, id: TyId) -> Span {
+        self.ty_spans[id]
+    }
+    pub fn var_span(&self, id: VarId) -> Span {
+        self.var_spans[id]
+    }
+    pub fn fn_span(&self, id: FnId) -> Span {
+        self.fn_spans[id]
     }
 
     // --- accessors ---------------------------------------------------------
