@@ -18,9 +18,9 @@ pub enum ScopeKind {
 // (test and benchmark later on)
 #[derive(Default)]
 pub struct SymTable {
-    pub vars: FxHashMap<Symbol, Spanned<VarId>>,
-    pub fns: FxHashMap<Symbol, Spanned<FnId>>,
-    pub tys: FxHashMap<Symbol, Spanned<TyId>>,
+    vars: FxHashMap<Symbol, Spanned<VarId>>,
+    fns: FxHashMap<Symbol, Spanned<FnId>>,
+    tys: FxHashMap<Symbol, Spanned<TyId>>,
 }
 
 impl SymTable {
@@ -92,8 +92,8 @@ impl SymTable {
 }
 
 pub struct Scope {
-    pub kind: ScopeKind,
-    pub table: SymTable,
+    kind: ScopeKind,
+    table: SymTable,
 }
 
 impl Scope {
@@ -119,8 +119,8 @@ impl Scope {
 
 #[derive(Default)]
 pub struct Scopes {
-    pub root: SymTable,
-    pub scopes: Vec<Scope>,
+    root: SymTable,
+    scopes: Vec<Scope>,
 }
 
 impl Scopes {

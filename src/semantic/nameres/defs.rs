@@ -23,30 +23,9 @@ pub type FnDef = ();
 
 #[derive(Default)]
 pub struct Definitions {
-    pub tys: IndexVec<TyId, Option<TyDef>>,
-    pub vars: IndexVec<VarId, Option<VarDef>>,
-    pub fns: IndexVec<FnId, Option<FnDef>>,
-}
-
-/// Fetches a definition that is expected to already have been filled in.
-///
-/// Resolution allocates every id before it computes any definition, so an id is
-/// only ever read back after it has been defined. Debug builds check that
-/// invariant and panic on violation; release builds compile the check out
-/// entirely, so reading an unfilled id is undefined behavior.
-#[cfg(debug_assertions)]
-#[inline(always)]
-#[track_caller]
-fn defined<'a, T>(slot: &'a Option<T>, id: impl std::fmt::Debug) -> &'a T {
-    slot.as_ref()
-        .unwrap_or_else(|| panic!("{id:?} used before it was defined"))
-}
-
-#[cfg(not(debug_assertions))]
-#[inline(always)]
-fn defined<'a, T>(slot: &'a Option<T>, _id: impl std::fmt::Debug) -> &'a T {
-    // SAFETY: the caller upholds the invariant documented above.
-    unsafe { slot.as_ref().unwrap_unchecked() }
+    tys: IndexVec<TyId, Option<TyDef>>,
+    vars: IndexVec<VarId, Option<VarDef>>,
+    fns: IndexVec<FnId, Option<FnDef>>,
 }
 
 impl Definitions {
@@ -79,12 +58,33 @@ impl Definitions {
     /// Panics in debug builds if `id` has not been defined yet. Release builds
     /// elide the check, so reading an undefined id there is undefined behavior.
     pub fn ty(&self, id: TyId) -> &TyDef {
-        defined(&self.tys[id], id)
+        Self::defined(&self.tys[id], id)
     }
     pub fn var(&self, id: VarId) -> &VarDef {
-        defined(&self.vars[id], id)
+        Self::defined(&self.vars[id], id)
     }
     pub fn fn_(&self, id: FnId) -> &FnDef {
-        defined(&self.fns[id], id)
+        Self::defined(&self.fns[id], id)
+    }
+
+    /// Fetches a definition that is expected to already have been filled in.
+    ///
+    /// Resolution allocates every id before it computes any definition, so an id
+    /// is only ever read back after it has been defined. Debug builds check that
+    /// invariant and panic on violation; release builds compile the check out
+    /// entirely, so reading an unfilled id is undefined behavior.
+    #[cfg(debug_assertions)]
+    #[inline(always)]
+    #[track_caller]
+    fn defined<'a, T>(slot: &'a Option<T>, id: impl std::fmt::Debug) -> &'a T {
+        slot.as_ref()
+            .unwrap_or_else(|| panic!("{id:?} used before it was defined"))
+    }
+
+    #[cfg(not(debug_assertions))]
+    #[inline(always)]
+    fn defined<'a, T>(slot: &'a Option<T>, _id: impl std::fmt::Debug) -> &'a T {
+        // SAFETY: the caller upholds the invariant documented above.
+        unsafe { slot.as_ref().unwrap_unchecked() }
     }
 }
