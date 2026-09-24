@@ -50,14 +50,6 @@ pub enum Stmt {
     },
 }
 
-pub enum Literal {
-    Int(u64),
-    Float(f64),
-    Bool(bool),
-    String(String),
-    Char(char),
-}
-
 pub enum Expr {
     Literal(Literal),
     Variable(VarId),
@@ -71,4 +63,12 @@ pub enum Expr {
     Ref(ExprId),
     Deref(ExprId),
     Block(Block),
+}
+
+pub enum Literal {
+    Int(u64),
+    Float(f64),
+    Bool(bool),
+    String(String),
+    Char(char),
 }

@@ -5,7 +5,7 @@
 use std::ops::Deref;
 
 use index_vec::IndexVec;
-use itertools::{Either, Itertools};
+use itertools::Either;
 use rustc_hash::FxHashMap;
 
 use crate::semantic::ast::{BinOp, Ident, Symbol, UnOp};
@@ -58,6 +58,21 @@ pub enum TypeError {
         op: BinOp,
         lhs: Ty,
         rhs: Ty,
+    },
+    TypeMismatch {
+        span: Span,
+        found: Ty,
+        expected: Ty,
+    },
+    ArgumentTypeMismatch {
+        call: Span,
+        index: usize,
+        found: Ty,
+        expected: Ty,
+    },
+    NotCallable {
+        span: Span,
+        ty: Ty,
     },
 }
 
@@ -122,17 +137,39 @@ impl<'ast> Typeck<'ast> {
             .push(TypeError::MismatchedBinaryOperands { span, op, lhs, rhs });
     }
 
-    fn unify(&mut self, lhs: Ty, rhs: Ty) -> Ty {
-        match (lhs, rhs) {
-            (Ty::Unknown, rhs) => rhs,
-            (lhs, Ty::Unknown) => lhs,
-            (lhs, rhs) => {
-                if lhs.eq(&rhs) {
-                    lhs
-                } else {
-                    Ty::Unknown
-                }
-            }
+    fn emit_type_mismatch(&mut self, found: Ty, expected: Ty, span: Span) {
+        self.diagnostics
+            .push(TypeError::TypeMismatch { span, found, expected });
+    }
+
+    fn emit_argument_mismatch(&mut self, index: usize, found: Ty, expected: Ty, call: Span) {
+        self.diagnostics.push(TypeError::ArgumentTypeMismatch {
+            call,
+            index,
+            found,
+            expected,
+        });
+    }
+
+    fn emit_not_callable(&mut self, ty: Ty, span: Span) {
+        self.diagnostics.push(TypeError::NotCallable { span, ty });
+    }
+
+    /// Checks that `found` coerces to `expected` and returns the type to keep
+    /// inferring with (the established side).
+    ///
+    /// `Never` is the bottom type: a `Never` value may be used where any type is
+    /// expected, but no other type may be used where `Never` is expected.
+    fn check_type(&mut self, found: Ty, expected: Ty, span: Span) -> Ty {
+        if !fits(&found, &expected) {
+            self.emit_type_mismatch(found, expected, span);
+            return Ty::Unknown;
+        }
+
+        if matches!(found, Ty::Never | Ty::Unknown) {
+            expected
+        } else {
+            found
         }
     }
 
@@ -149,7 +186,7 @@ impl<'ast> Typeck<'ast> {
         });
         let expected = self.definitions.fns(id).ret.clone();
         let (block, inferred) = self.check_block(exprs, &func.body, &expected);
-        self.unify(expected, inferred);
+        self.check_type(inferred, expected, func.body.span());
         block
     }
 
@@ -159,31 +196,56 @@ impl<'ast> Typeck<'ast> {
         block: &ast::Block,
         ret_ty: &Ty,
     ) -> (hir::Block, Ty) {
-        let stmts = block
-            .stmts
-            .iter()
-            .map(|stmt| self.check_stmt(exprs, stmt, ret_ty))
-            .collect_vec();
+        let mut stmts = Vec::with_capacity(block.stmts.len());
+        // a block diverges if any of its statements does not fall through
+        let mut diverges = false;
+        for stmt in &block.stmts {
+            let (stmt, ty) = self.check_stmt(exprs, stmt, ret_ty);
+            diverges |= matches!(ty, Ty::Never);
+            stmts.push(stmt);
+        }
+
         let tail = block
             .tail
             .as_ref()
             .map(|expr| self.check_expr(exprs, expr, ret_ty));
-        let (tail, ty) = if let Some((id, ty)) = tail {
-            (Some(id), ty)
+
+        let ty = if diverges {
+            Ty::Never
+        } else if let Some((_, ty)) = &tail {
+            ty.clone()
         } else {
-            (None, Ty::Unit)
+            Ty::Unit
         };
-        (hir::Block { stmts, tail }, ty)
+
+        (
+            hir::Block {
+                stmts,
+                tail: tail.map(|(id, _)| id),
+            },
+            ty,
+        )
     }
 
+    /// Checks a single statement, returning its hir node together with its
+    /// type. The type is only meaningful for its divergence: `Ty::Never` means
+    /// control does not fall through, everything else is normalised to
+    /// `Ty::Unit`.
     fn check_stmt(
         &mut self,
         exprs: &mut IndexVec<hir::ExprId, hir::Expr>,
         stmt: &ast::Stmt,
         ret_ty: &Ty,
-    ) -> hir::Stmt {
+    ) -> (hir::Stmt, Ty) {
         match stmt {
-            ast::Stmt::Expr(expr) => hir::Stmt::Expr(self.check_expr(exprs, expr, ret_ty).0),
+            ast::Stmt::Expr(expr) => {
+                let (expr, ty) = self.check_expr(exprs, expr, ret_ty);
+                let diverges = matches!(ty, Ty::Never);
+                (
+                    hir::Stmt::Expr(expr),
+                    if diverges { Ty::Never } else { Ty::Unit },
+                )
+            }
             ast::Stmt::Let { name, ty, value } => {
                 let id = self
                     .resolutions
@@ -193,7 +255,9 @@ impl<'ast> Typeck<'ast> {
                     .expect("variable not found, something went wrong")
                     .unwrap_left();
 
+                let value_span = value.span();
                 let (expr, infered_ty) = self.check_expr(exprs, value, ret_ty);
+                let diverges = matches!(infered_ty, Ty::Never);
 
                 let ty = match ty {
                     Some(ty) => {
@@ -204,65 +268,103 @@ impl<'ast> Typeck<'ast> {
                             .cloned()
                             .expect("type not found, something went wrong");
 
-                        self.unify(infered_ty, expected_ty)
+                        self.check_type(infered_ty, expected_ty, value_span)
                     }
                     None => infered_ty,
                 };
 
                 self.env.insert(id, ty.clone());
 
-                hir::Stmt::Let {
-                    name: id,
-                    ty,
-                    value: expr,
-                }
+                (
+                    hir::Stmt::Let {
+                        name: id,
+                        ty,
+                        value: expr,
+                    },
+                    if diverges { Ty::Never } else { Ty::Unit },
+                )
             }
             ast::Stmt::Assign { place, value } => {
-                let (value, infered_ty) = self.check_expr(exprs, value, ret_ty);
-                let (place, expected_ty) = self.check_expr(exprs, place, ret_ty);
-                self.unify(infered_ty, expected_ty);
-                hir::Stmt::Assign { place, value }
+                let value_span = value.span();
+                let (value, value_ty) = self.check_expr(exprs, value, ret_ty);
+                let (place, place_ty) = self.check_expr(exprs, place, ret_ty);
+                let diverges = matches!(value_ty, Ty::Never) || matches!(place_ty, Ty::Never);
+                // the value must fit the place it is assigned to
+                self.check_type(value_ty, place_ty, value_span);
+                (
+                    hir::Stmt::Assign { place, value },
+                    if diverges { Ty::Never } else { Ty::Unit },
+                )
             }
-            // we are not checking that the type being returned here is correct
-            // need to pass that information down the context
-            ast::Stmt::Return { value } => hir::Stmt::Return {
-                value: value.map(|v| {
-                    let (expr, ty) = self.check_expr(exprs, &v, ret_ty);
-                    self.unify(ty, ret_ty.clone());
+            // a `return` never falls through, so its type is `Never`
+            ast::Stmt::Return { value } => {
+                let value = value.as_ref().map(|value| {
+                    let span = value.span();
+                    let (expr, ty) = self.check_expr(exprs, value, ret_ty);
+                    self.check_type(ty, ret_ty.clone(), span);
                     expr
-                }),
-            },
+                });
+                (hir::Stmt::Return { value }, Ty::Never)
+            }
             ast::Stmt::Loop { body } => {
+                let span = body.span();
+                // a loop only falls through if it can be exited with a `break`;
+                // otherwise it is an infinite loop of type `Never`
+                let can_break = block_breaks(body);
                 let (body, ty) = self.check_block(exprs, body, ret_ty);
-                self.unify(ty, Ty::Unit);
-                hir::Stmt::Loop { body }
+                self.check_type(ty, Ty::Unit, span);
+                (
+                    hir::Stmt::Loop { body },
+                    if can_break { Ty::Unit } else { Ty::Never },
+                )
             }
             ast::Stmt::Break { value } => {
                 if let Some(_value) = value {
                     todo!("breaking out of loops with a value is not yet supported");
                 }
-                hir::Stmt::Break { value: None }
+                (hir::Stmt::Break { value: None }, Ty::Never)
             }
-            ast::Stmt::Continue => hir::Stmt::Continue,
+            ast::Stmt::Continue => (hir::Stmt::Continue, Ty::Never),
             ast::Stmt::If {
                 cond,
                 then_block,
                 else_block,
             } => {
+                let cond_span = cond.span();
+                let then_span = then_block.span();
+
                 let (cond, cond_ty) = self.check_expr(exprs, cond, ret_ty);
-                self.unify(cond_ty, Ty::Builtin(BuiltinTy::Bool));
+                let cond_diverges = matches!(cond_ty, Ty::Never);
+                self.check_type(cond_ty, Ty::Builtin(BuiltinTy::Bool), cond_span);
+
                 let (then_block, then_ty) = self.check_block(exprs, then_block, ret_ty);
-                self.unify(then_ty, Ty::Unit);
-                let else_block = else_block.map(|block| {
-                    let (b, ty) = self.check_block(exprs, &block, ret_ty);
-                    self.unify(ty, Ty::Unit);
-                    b
-                });
-                hir::Stmt::If {
-                    cond,
-                    then_block,
-                    else_block,
-                }
+                let then_diverges = matches!(then_ty, Ty::Never);
+                self.check_type(then_ty, Ty::Unit, then_span);
+
+                let (else_block, else_diverges) = match else_block {
+                    Some(block) => {
+                        let span = block.span();
+                        let (block, ty) = self.check_block(exprs, block, ret_ty);
+                        let diverges = matches!(ty, Ty::Never);
+                        self.check_type(ty, Ty::Unit, span);
+                        (Some(block), diverges)
+                    }
+                    None => (None, false),
+                };
+
+                // an `if` diverges only if its condition never yields or if
+                // both branches always diverge
+                let diverges =
+                    cond_diverges || (else_block.is_some() && then_diverges && else_diverges);
+
+                (
+                    hir::Stmt::If {
+                        cond,
+                        then_block,
+                        else_block,
+                    },
+                    if diverges { Ty::Never } else { Ty::Unit },
+                )
             }
         }
     }
@@ -336,7 +438,13 @@ impl<'ast> Typeck<'ast> {
             }
             ast::Expr::Ref(node) => {
                 let (expr, ty) = self.check_expr(exprs, node, ret_ty);
-                (exprs.push(hir::Expr::Ref(expr)), Ty::Pointer(Box::new(ty)))
+                // referencing an expression that never yields also diverges
+                let ty = if matches!(ty, Ty::Never) {
+                    Ty::Never
+                } else {
+                    Ty::Pointer(Box::new(ty))
+                };
+                (exprs.push(hir::Expr::Ref(expr)), ty)
             }
             ast::Expr::Deref(node) => {
                 let (reference, ty) = self.check_expr(exprs, node, ret_ty);
@@ -353,6 +461,8 @@ impl<'ast> Typeck<'ast> {
     fn check_deref(&mut self, ty: Ty, span: Span) -> Ty {
         match ty {
             Ty::Pointer(ty) => *ty,
+            // the operand never yields, so the dereference never yields either
+            Ty::Never => Ty::Never,
             Ty::Unknown => ty,
             _ => {
                 self.diagnostics.push(TypeError::InvalidDeref { span, ty });
@@ -362,6 +472,11 @@ impl<'ast> Typeck<'ast> {
     }
 
     fn check_index(&mut self, lhs: Ty, index: Ty, span: Span) -> Ty {
+        // indexing into, or with, an expression that never yields diverges
+        if matches!(lhs, Ty::Never) || matches!(index, Ty::Never) {
+            return Ty::Never;
+        }
+
         match lhs {
             Ty::Pointer(ref ty) | Ty::Array(ref ty) => {
                 let ret = (**ty).clone();
@@ -391,13 +506,25 @@ impl<'ast> Typeck<'ast> {
     fn check_call(&mut self, func: Ty, args: &[Ty], call_span: Span) -> Ty {
         match func {
             Ty::Pointer(ty) => self.check_call(*ty, args, call_span),
+            // calling an expression that never yields diverges
+            Ty::Never => Ty::Never,
             Ty::Fn(ref ret, ref params) => {
                 // get the return type
                 let ret = (**ret).clone();
-                // check if the types match
-                args.iter().zip(params.iter()).for_each(|(arg, expected)| {
-                    self.unify(arg.clone(), expected.clone());
-                });
+                // check if the arguments fit their parameters
+                args.iter()
+                    .zip(params.iter())
+                    .enumerate()
+                    .for_each(|(index, (arg, expected))| {
+                        if !fits(arg, expected) {
+                            self.emit_argument_mismatch(
+                                index,
+                                arg.clone(),
+                                expected.clone(),
+                                call_span,
+                            );
+                        }
+                    });
 
                 // check if the count/arity matches
                 if params.len() != args.len() {
@@ -411,7 +538,8 @@ impl<'ast> Typeck<'ast> {
                 ret
             }
             _ => {
-                todo!("emit error for trying to an uncallable expression")
+                self.emit_not_callable(func, call_span);
+                Ty::Unknown
             }
         }
     }
@@ -419,6 +547,8 @@ impl<'ast> Typeck<'ast> {
     fn check_field(&mut self, ty: Ty, field: &Ident) -> (usize, Ty) {
         match ty {
             Ty::Pointer(ty) => self.check_field((*ty).clone(), field),
+            // the receiver never yields, so the field access never yields either
+            Ty::Never => (0, Ty::Never),
             Ty::Custom(id) => {
                 let def = self.definitions.tys(id);
                 match def {
@@ -473,8 +603,10 @@ impl<'ast> Typeck<'ast> {
             UnOp::Not if matches!(ty, Ty::Builtin(BuiltinTy::Bool)) || is_integer(&ty) => ty,
             // `-` is defined for signed integers and floats and preserves the type.
             UnOp::Neg if is_signed_integer(&ty) || is_float(&ty) => ty,
+            // an operand that never yields makes the whole expression diverge
+            _ if matches!(ty, Ty::Never) => Ty::Never,
             // the operand already failed to be inferred, so don't add noise.
-            _ if matches!(ty, Ty::Unknown | Ty::Never) => Ty::Unknown,
+            _ if matches!(ty, Ty::Unknown) => Ty::Unknown,
             _ => {
                 self.emit_invalid_unary(op, ty, span);
                 Ty::Unknown
@@ -486,9 +618,14 @@ impl<'ast> Typeck<'ast> {
     fn infer_binary(&mut self, lhs: Ty, rhs: Ty, op: BinOp, span: Span) -> Ty {
         use BinOp::*;
 
+        // if either operand never yields, the whole expression diverges
+        if matches!(lhs, Ty::Never) || matches!(rhs, Ty::Never) {
+            return Ty::Never;
+        }
+
         // if either operand failed to be inferred there is nothing meaningful
         // to check, and reporting here would only produce cascading errors.
-        if matches!(lhs, Ty::Unknown | Ty::Never) || matches!(rhs, Ty::Unknown | Ty::Never) {
+        if matches!(lhs, Ty::Unknown) || matches!(rhs, Ty::Unknown) {
             return Ty::Unknown;
         }
 
@@ -547,6 +684,15 @@ impl<'ast> Typeck<'ast> {
     }
 }
 
+/// Whether `found` coerces to `expected`. `Never` is the bottom type and
+/// therefore fits any expected type, and `Unknown` is treated as a wildcard so
+/// that already-reported errors do not cascade.
+fn fits(found: &Ty, expected: &Ty) -> bool {
+    matches!(found, Ty::Never | Ty::Unknown)
+        || matches!(expected, Ty::Unknown)
+        || found == expected
+}
+
 fn is_integer(ty: &Ty) -> bool {
     matches!(
         ty,
@@ -584,4 +730,52 @@ fn is_equatable(ty: &Ty) -> bool {
 
 fn is_ordered(ty: &Ty) -> bool {
     is_numeric(ty) || matches!(ty, Ty::Builtin(BuiltinTy::Char | BuiltinTy::String))
+}
+
+/// Whether a loop body contains a `break` that targets the loop it belongs to.
+///
+/// Nested loops are skipped because their `break`s target themselves. `break`
+/// can also appear inside block expressions, so the scan descends into
+/// expressions as well.
+fn block_breaks(block: &ast::RBlock) -> bool {
+    block.stmts.iter().any(|stmt| stmt_breaks(stmt))
+        || block.tail.as_ref().is_some_and(|expr| expr_breaks(expr))
+}
+
+fn stmt_breaks(stmt: &ast::Stmt) -> bool {
+    match stmt {
+        ast::Stmt::Break { .. } => true,
+        ast::Stmt::Loop { .. } => false,
+        ast::Stmt::Continue => false,
+        ast::Stmt::Expr(expr) => expr_breaks(expr),
+        ast::Stmt::Let { value, .. } => expr_breaks(value),
+        ast::Stmt::Assign { place, value } => expr_breaks(place) || expr_breaks(value),
+        ast::Stmt::Return { value } => value.as_ref().is_some_and(|value| expr_breaks(value)),
+        ast::Stmt::If {
+            cond,
+            then_block,
+            else_block,
+        } => {
+            expr_breaks(cond)
+                || block_breaks(then_block)
+                || else_block.as_ref().is_some_and(|block| block_breaks(block))
+        }
+    }
+}
+
+fn expr_breaks(expr: &ast::RExpr) -> bool {
+    match &***expr {
+        ast::Expr::Block(block) => block_breaks(block),
+        ast::Expr::Grouping(node) => expr_breaks(node),
+        ast::Expr::Binary { lhs, rhs, .. } => expr_breaks(lhs) || expr_breaks(rhs),
+        ast::Expr::Unary { rhs, .. } => expr_breaks(rhs),
+        ast::Expr::Field { lhs, .. } => expr_breaks(lhs),
+        ast::Expr::Call { lhs, args } => expr_breaks(lhs) || args.iter().any(|arg| expr_breaks(arg)),
+        ast::Expr::MethodCall { lhs, args, .. } => {
+            expr_breaks(lhs) || args.iter().any(|arg| expr_breaks(arg))
+        }
+        ast::Expr::Index { lhs, index } => expr_breaks(lhs) || expr_breaks(index),
+        ast::Expr::Ref(node) | ast::Expr::Deref(node) => expr_breaks(node),
+        ast::Expr::Literal(_) | ast::Expr::Variable(_) => false,
+    }
 }
