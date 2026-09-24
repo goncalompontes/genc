@@ -37,6 +37,7 @@ pub enum Expr<'ast> {
     Block(RBlock<'ast>),
 }
 
+#[derive(Clone, Copy)]
 pub enum BinOp {
     // +
     Add,
@@ -65,6 +66,8 @@ pub enum BinOp {
     // ||
     Or,
 }
+
+#[derive(Debug, Clone, Copy)]
 pub enum UnOp {
     // !
     Not,

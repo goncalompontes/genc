@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 
+use crate::semantic::ast::RBlock;
+
 use super::{Block, Ident, RDataDef, REnumDef, RType, Symbol, Type, Visibility};
 
 pub enum TypeDef<'ast> {
@@ -38,22 +40,22 @@ pub struct DataDef<'ast> {
 
 impl<'ast> DataDef<'ast> {
     pub fn unique_fields<F: FnMut(&Ident, &Ident)>(
-        &self,
+        &'ast self,
         mut visit_duplicate: F,
-    ) -> Vec<(Ident, RType<'ast>)> {
-        let mut fields: HashMap<Symbol, (Ident, RType<'ast>)> =
+    ) -> impl Iterator<Item = (Ident, &'ast RType<'ast>)> {
+        let mut fields: HashMap<Symbol, (Ident, &'_ RType<'ast>)> =
             HashMap::with_capacity(self.fields.len());
-        for v in &self.fields {
+        for v in self.fields.iter() {
             match fields.get(&v.0) {
                 Some(orig) => {
                     visit_duplicate(&orig.0, &v.0);
                 }
                 None => {
-                    fields.insert(*v.0, *v);
+                    fields.insert(*v.0, (v.0, &v.1));
                 }
             }
         }
-        fields.into_values().collect()
+        fields.into_values()
     }
 }
 
@@ -66,7 +68,10 @@ pub struct EnumDef<'ast> {
 }
 
 impl<'ast> EnumDef<'ast> {
-    pub fn unique_variants<F: FnMut(&Ident, &Ident)>(&self, mut visit_duplicate: F) -> Vec<Symbol> {
+    pub fn unique_variants<F: FnMut(&Ident, &Ident)>(
+        &self,
+        mut visit_duplicate: F,
+    ) -> impl Iterator<Item = Symbol> {
         let mut variants: HashMap<Symbol, Ident> = HashMap::with_capacity(self.variants.len());
         for v in &self.variants {
             match variants.get(v) {
@@ -78,7 +83,7 @@ impl<'ast> EnumDef<'ast> {
                 }
             }
         }
-        variants.into_keys().collect()
+        variants.into_keys()
     }
 }
 
@@ -86,7 +91,28 @@ pub struct Function<'ast> {
     pub vis: Visibility,
     pub name: Ident,
     // generics: Vec<Generic>
-    pub args: Vec<(Ident, Type<'ast>)>,
-    pub ret: Type<'ast>,
-    pub body: Block<'ast>,
+    pub args: Vec<(Ident, RType<'ast>)>,
+    pub ret: RType<'ast>,
+    pub body: RBlock<'ast>,
+}
+
+impl<'ast> Function<'ast> {
+    pub fn unique_args<F: FnMut(&Ident, &Ident)>(
+        &self,
+        mut visit_duplicate: F,
+    ) -> impl Iterator<Item = (Ident, RType<'ast>)> {
+        let mut fields: HashMap<Symbol, (Ident, RType<'ast>)> =
+            HashMap::with_capacity(self.args.len());
+        for v in &self.args {
+            match fields.get(&v.0) {
+                Some(orig) => {
+                    visit_duplicate(&orig.0, &v.0);
+                }
+                None => {
+                    fields.insert(*v.0, *v);
+                }
+            }
+        }
+        fields.into_values()
+    }
 }

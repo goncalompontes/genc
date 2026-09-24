@@ -1,3 +1,4 @@
+use std::hash::Hash;
 use std::marker::PhantomData;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -40,10 +41,25 @@ impl NodeId {
     }
 }
 
-#[derive(Debug, PartialEq, Eq, Hash)]
+#[derive(Debug)]
 pub struct Id<T> {
     id: NodeId,
     _marker: PhantomData<T>,
+}
+
+impl<T> PartialEq for Id<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
+}
+
+impl<T> Eq for Id<T> {}
+
+impl<T> Hash for Id<T> {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.id.hash(state);
+        self._marker.hash(state);
+    }
 }
 
 impl<T> Clone for Id<T> {

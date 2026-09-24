@@ -1,7 +1,8 @@
 use index_vec::{IndexVec, define_index_type};
 
 use crate::semantic::ast::Symbol;
-use crate::semantic::node::Span;
+use crate::semantic::nameres::ty::Ty;
+use crate::semantic::node::{Span, Spanned};
 
 define_index_type! {
     pub struct TyId = usize;
@@ -17,34 +18,45 @@ define_index_type! {
 
 pub enum TyDef {
     Enum { variants: Box<[Symbol]> },
-    Struct { fields: Vec<(Symbol, TyId)> },
+    Struct { fields: Vec<(Symbol, Ty)> },
+    Alias(Ty),
 }
-pub type VarDef = ();
-pub type FnDef = ();
+pub enum VarDef {
+    Arg,
+    Local,
+}
+
+pub struct FnDef {
+    pub args: Box<[(Symbol, Ty)]>,
+    pub ret: Ty,
+}
+
+impl FnDef {
+    pub fn signature(&self) -> Ty {
+        Ty::Fn(
+            Box::new(self.ret.clone()),
+            self.args.iter().map(|(_, ty)| ty.clone()).collect(),
+        )
+    }
+}
 
 #[derive(Default)]
 pub struct Definitions {
-    tys: IndexVec<TyId, Option<TyDef>>,
-    ty_spans: IndexVec<TyId, Span>,
-    vars: IndexVec<VarId, Option<VarDef>>,
-    var_spans: IndexVec<VarId, Span>,
-    fns: IndexVec<FnId, Option<FnDef>>,
-    fn_spans: IndexVec<FnId, Span>,
+    tys: IndexVec<TyId, Spanned<Option<TyDef>>>,
+    vars: IndexVec<VarId, Spanned<Option<VarDef>>>,
+    fns: IndexVec<FnId, Spanned<Option<FnDef>>>,
 }
 
 impl Definitions {
     // --- allocate an id now, define it later ------------------------------
     pub fn alloc_ty(&mut self, span: Span) -> TyId {
-        self.ty_spans.push(span);
-        self.tys.push(None)
+        self.tys.push(Spanned { span, value: None })
     }
     pub fn alloc_var(&mut self, span: Span) -> VarId {
-        self.var_spans.push(span);
-        self.vars.push(None)
+        self.vars.push(Spanned { span, value: None })
     }
     pub fn alloc_fn(&mut self, span: Span) -> FnId {
-        self.fn_spans.push(span);
-        self.fns.push(None)
+        self.fns.push(Spanned { span, value: None })
     }
 
     // --- fill a previously allocated id -----------------------------------
@@ -61,27 +73,49 @@ impl Definitions {
         debug_assert!(old.is_none(), "fn {id:?} was defined twice");
     }
 
+    // -- allocate and id and define a new variable/type/fn -----------------
+    pub fn insert_ty(&mut self, span: Span, def: TyDef) -> TyId {
+        self.tys.push(Spanned {
+            span,
+            value: Some(def),
+        })
+    }
+
+    pub fn insert_var(&mut self, span: Span, def: VarDef) -> VarId {
+        self.vars.push(Spanned {
+            span,
+            value: Some(def),
+        })
+    }
+
+    pub fn insert_fn(&mut self, span: Span, def: FnDef) -> FnId {
+        self.fns.push(Spanned {
+            span,
+            value: Some(def),
+        })
+    }
+
     // --- definition locations ---------------------------------------------
     pub fn ty_span(&self, id: TyId) -> Span {
-        self.ty_spans[id]
+        self.tys[id].span()
     }
     pub fn var_span(&self, id: VarId) -> Span {
-        self.var_spans[id]
+        self.vars[id].span()
     }
     pub fn fn_span(&self, id: FnId) -> Span {
-        self.fn_spans[id]
+        self.fns[id].span()
     }
 
     // --- accessors ---------------------------------------------------------
     /// Panics in debug builds if `id` has not been defined yet. Release builds
     /// elide the check, so reading an undefined id there is undefined behavior.
-    pub fn ty(&self, id: TyId) -> &TyDef {
+    pub fn tys(&self, id: TyId) -> &TyDef {
         Self::defined(&self.tys[id], id)
     }
-    pub fn var(&self, id: VarId) -> &VarDef {
+    pub fn vars(&self, id: VarId) -> &VarDef {
         Self::defined(&self.vars[id], id)
     }
-    pub fn fn_(&self, id: FnId) -> &FnDef {
+    pub fn fns(&self, id: FnId) -> &FnDef {
         Self::defined(&self.fns[id], id)
     }
 

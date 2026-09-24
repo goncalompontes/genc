@@ -10,3 +10,4 @@ pub mod diagnostics;
 pub mod nameres;
 pub mod node;
 pub mod parser;
+pub mod typeck;

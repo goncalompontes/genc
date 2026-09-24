@@ -1,16 +1,18 @@
+use crate::semantic::ast::RType;
+
 use super::{Expr, Ident, Item, RBlock, RExpr, RStmt, Type};
 
 pub struct Block<'ast> {
     pub items: Vec<Item<'ast>>,
     pub stmts: Vec<RStmt<'ast>>,
-    pub tail: Option<Expr<'ast>>,
+    pub tail: Option<RExpr<'ast>>,
 }
 
 pub enum Stmt<'ast> {
-    Expr(Expr<'ast>),
+    Expr(RExpr<'ast>),
     Let {
         name: Ident,
-        ty: Type<'ast>,
+        ty: Option<RType<'ast>>,
         value: RExpr<'ast>,
     },
     Assign {

@@ -4,7 +4,7 @@ use crate::semantic::node::Span;
 pub enum ResolutionError {
     DuplicateTypeDefinition {
         symbol: Symbol,
-        original: Span,
+        original: Option<Span>,
         duplicate: Span,
     },
     DuplicateFunctionDefinition {
@@ -13,13 +13,23 @@ pub enum ResolutionError {
         duplicate: Span,
     },
     DuplicateVariantDefinition {
-        symbol: crate::semantic::node::Node<string_interner::symbol::SymbolU32>,
-        original: chumsky::prelude::SimpleSpan,
-        duplicate: chumsky::prelude::SimpleSpan,
+        symbol: Symbol,
+        original: Span,
+        duplicate: Span,
     },
     DuplicateFieldDefinition {
-        symbol: crate::semantic::node::Node<string_interner::symbol::SymbolU32>,
-        original: chumsky::prelude::SimpleSpan,
-        duplicate: chumsky::prelude::SimpleSpan,
+        symbol: Symbol,
+        original: Span,
+        duplicate: Span,
     },
+    UnknownType {
+        span: Span,
+        name: Symbol,
+    },
+    DuplicateArgumentDefinition {
+        symbol: Symbol,
+        original: Span,
+        duplicate: Span,
+    },
+    UnknownName { span: chumsky::prelude::SimpleSpan, name: string_interner::symbol::SymbolU32 },
 }

@@ -3,6 +3,7 @@ use std::collections::hash_map::Entry;
 use rustc_hash::{FxHashMap, FxHashSet, FxHasher};
 
 use crate::semantic::ast::Symbol;
+use crate::semantic::nameres::ty::Ty;
 
 use super::{FnId, TyId, VarId};
 
@@ -19,7 +20,7 @@ pub enum ScopeKind {
 pub struct SymTable {
     vars: FxHashMap<Symbol, VarId>,
     fns: FxHashMap<Symbol, FnId>,
-    tys: FxHashMap<Symbol, TyId>,
+    tys: FxHashMap<Symbol, Ty>,
 }
 
 impl SymTable {
@@ -34,7 +35,7 @@ impl SymTable {
     pub fn with(
         vars: FxHashMap<Symbol, VarId>,
         fns: FxHashMap<Symbol, FnId>,
-        tys: FxHashMap<Symbol, TyId>,
+        tys: FxHashMap<Symbol, Ty>,
     ) -> Self {
         Self { vars, fns, tys }
     }
@@ -43,8 +44,8 @@ impl SymTable {
         self.vars.get(name).copied()
     }
 
-    pub fn lookup_type(&self, name: &Symbol) -> Option<TyId> {
-        self.tys.get(name).copied()
+    pub fn lookup_type(&self, name: &Symbol) -> Option<Ty> {
+        self.tys.get(name).cloned()
     }
 
     pub fn lookup_fn(&self, name: &Symbol) -> Option<FnId> {
@@ -79,9 +80,9 @@ impl SymTable {
     ///
     /// Same contract as [`Self::define_fn`].
     #[must_use = "the shadowed definition is returned; ignoring it hides accidental shadowing"]
-    pub fn define_ty(&mut self, name: Symbol, id: TyId) -> Result<(), TyId> {
+    pub fn define_ty(&mut self, name: Symbol, id: Ty) -> Result<(), Ty> {
         match self.tys.entry(name) {
-            Entry::Occupied(e) => Err(*e.get()),
+            Entry::Occupied(e) => Err(e.get().clone()),
             Entry::Vacant(e) => {
                 e.insert(id);
                 Ok(())
@@ -107,7 +108,7 @@ impl Scope {
         self.table.lookup_var(name)
     }
 
-    pub fn lookup_type(&self, name: &Symbol) -> Option<TyId> {
+    pub fn lookup_type(&self, name: &Symbol) -> Option<Ty> {
         self.table.lookup_type(name)
     }
 
@@ -155,7 +156,7 @@ impl Scopes {
         }
     }
 
-    pub fn lookup_type(&self, name: &Symbol) -> Option<TyId> {
+    pub fn lookup_type(&self, name: &Symbol) -> Option<Ty> {
         let mut curr = self.scopes.iter().rev();
         loop {
             match curr.next() {
@@ -190,5 +191,16 @@ impl Scopes {
             .last_mut()
             .map(|scope| &mut scope.table)
             .unwrap_or(&mut self.root)
+    }
+
+    pub fn enter(&mut self, kind: ScopeKind) {
+        self.scopes.push(Scope {
+            kind,
+            table: SymTable::default(),
+        });
+    }
+
+    pub fn exit(&mut self) {
+        self.scopes.pop();
     }
 }
